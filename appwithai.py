@@ -7,12 +7,16 @@ import os
 import re
 import google.generativeai as genai
 import time
+import nltk
+from nltk.stem import PorterStemmer
+
+nltk.download('punkt')
 
 # ========== CONFIG ==========
 FILE1_PATH = "updated_benchmark.xlsx"
 FILE2_PATH = "store_prices.xlsx"
 PROGRESS_PATH = "progress.json"
-GEMINI_API_KEY = "AIzaSyAxI9Qga0UjMVvV_b_AEwiW9uMzRBXVuxg"  # 🔑 Replace with your actual Gemini API key
+GEMINI_API_KEY = "AIzaSyBexNlGuAu5U6tBfrkR2p8EqA8fOh_Dta8"  # 🔑 Replace with your actual Gemini API key
 
 # ========== SETUP GEMINI ==========
 genai.configure(api_key=GEMINI_API_KEY)
@@ -50,18 +54,18 @@ class PriceMatcherApp:
         self.master = master
         self.master.title("🧠 Product Matcher (Updated Columns)")
         self.master.geometry("1200x500")
-        self.master.configure(bg="white")
+        self.master.configure(bg="#F5F5F5")
         self.master.bind('<Return>', lambda e: self.update_and_next())
 
         self.current_row = load_progress()
 
-        self.label = tk.Label(master, text="", font=("Arial", 16, "bold"), bg="white", anchor="w", justify="left")
+        self.label = tk.Label(master, text="", font=("Arial", 16, "bold"), bg="#F5F5F5", anchor="w", justify="left")
         self.label.pack(fill="x", padx=20, pady=(20, 10))
 
-        main_frame = tk.Frame(master, bg="white")
+        main_frame = tk.Frame(master, bg="#F5F5F5")
         main_frame.pack(pady=5, fill="both", expand=True)
 
-        btn_frame = tk.Frame(main_frame, bg="white")
+        btn_frame = tk.Frame(main_frame, bg="#F5F5F5")
         btn_frame.pack(side="left", padx=20, fill="y")
 
         self.update_btn = tk.Button(btn_frame, text="✅ Update & Next (Enter)", command=self.update_and_next, width=25, font=("Arial", 13))
@@ -70,7 +74,7 @@ class PriceMatcherApp:
         self.skip_btn = tk.Button(btn_frame, text="⏭️ Skip", command=self.next_product, width=25, font=("Arial", 13))
         self.skip_btn.pack()
 
-        self.status = tk.Label(btn_frame, text="", font=("Arial", 11, "italic"), fg="gray", bg="white")
+        self.status = tk.Label(btn_frame, text="", font=("Arial", 11, "italic"), fg="gray", bg="#F5F5F5")
         self.status.pack(pady=10)
 
         self.text = tk.Text(main_frame, font=("Arial", 13), height=12, width=100, wrap="word", cursor="arrow")
@@ -103,14 +107,21 @@ class PriceMatcherApp:
         self.label.config(text=f"🔍 Searching: {self.current_item_name}")
         self.status.config(text=f"Row: {self.current_row}")
 
-        words = re.findall(r'\b[a-zA-Z]+\b', self.current_item_name.lower())
-        numbers = re.findall(r'\d+', self.current_item_name)
+        # ======== NEW MATCHING LOGIC =========
+        stemmer = PorterStemmer()
+        raw_words = re.findall(r'\b[a-zA-Z]+\b', self.current_item_name.lower())
+        words = [stemmer.stem(word) for word in raw_words]
 
         filtered_candidates = []
         for name in file2_products:
             name_lc = name.lower()
-            if all(num in name_lc for num in numbers) and any(word in name_lc for word in words):
+            candidate_words = re.findall(r'\b[a-zA-Z]+\b', name_lc)
+            candidate_stems = [stemmer.stem(word) for word in candidate_words]
+
+            word_match_count = sum(1 for word in words if word in candidate_stems)
+            if word_match_count >= max(2, len(words) // 2):  # At least 50% match or 2 words
                 filtered_candidates.append(name)
+        # =====================================
 
         matches = process.extract(
             self.current_item_name,
@@ -119,24 +130,50 @@ class PriceMatcherApp:
             limit=10,
             score_cutoff=0
         )
+        numbers = re.findall(r'\d+', self.current_item_name)
 
         for i, (match, score, _) in enumerate(matches):
             self.best_matches.append(match)
             words_in_line = match.split()
+
             for word in words_in_line:
                 clean_word = re.sub(r'\W+', '', word).lower()
                 tag = None
-                if clean_word in words or clean_word in numbers:
+
+                # Highlight stemmed word matches (green)
+                if stemmer.stem(clean_word) in words:
                     tag = f"green_{i}"
                     self.text.insert(tk.END, word + " ", tag)
                     self.text.tag_config(tag, background="pale green")
+
+                # Highlight matching numbers (yellow)
+                elif any(num in clean_word for num in numbers):
+                    tag = f"yellow_{i}"
+                    self.text.insert(tk.END, word + " ", tag)
+                    self.text.tag_config(tag, background="yellow")
+
                 else:
                     self.text.insert(tk.END, word + " ")
+
             self.text.insert(tk.END, f"  ⟶ Score: {score}\n\n")
+
+        # for i, (match, score, _) in enumerate(matches):
+        #     self.best_matches.append(match)
+        #     words_in_line = match.split()
+        #     for word in words_in_line:
+        #         clean_word = re.sub(r'\W+', '', word).lower()
+        #         tag = None
+        #         if stemmer.stem(clean_word) in words:
+        #             tag = f"green_{i}"
+        #             self.text.insert(tk.END, word + " ", tag)
+        #             self.text.tag_config(tag, background="pale green")
+        #         else:
+        #             self.text.insert(tk.END, word + " ")
+        #     self.text.insert(tk.END, f"  ⟶ Score: {score}\n\n")
 
         if not self.best_matches:
             self.text.insert(tk.END, "❌ No good match found")
-            time.sleep(0.5)  # Skip delay for bad match
+            time.sleep(0.5)
             self.skip_btn.invoke()
 
         else:
@@ -151,10 +188,9 @@ class PriceMatcherApp:
                     f"❗Important Instructions:\n"
                     f"- Only one of these store products should match the benchmark name closely.\n"
                     f"- Packaging, usage, and purpose should be **identical or very close**.\n"
-                    f"- Match should NOT just be based on matching words like 'LED' or 'white'.\n"
+                    f"- Match should NOT just be based on matching words like 'LED' or '#F5F5F5'.\n"
                     f"- Output ONLY the best match product name from the list — no extra text.if not match then none"
                 )
-
 
                 gemini_response = gemini_model.generate_content(suggestion_prompt)
                 suggestion_text = gemini_response.text.strip()
@@ -164,11 +200,10 @@ class PriceMatcherApp:
                 self.text.tag_config("gemini_title", foreground="blue", font=("Arial", 13, "bold"))
                 self.text.tag_config("gemini_text", foreground="darkblue", font=("Arial", 12, "italic"))
 
-                # 🔵 Highlight Gemini's match in list
                 for i, match in enumerate(self.best_matches):
                     if suggestion_text.lower().strip() == match.lower().strip():
-                        line_start = f"{i * 3 + 1}.0"
-                        line_end = f"{i * 3 + 3}.0"
+                        line_start = f"{i * 2 + 1}.0"
+                        line_end = f"{i * 2 + 3}.0"
                         self.text.tag_add("gemini_match", line_start, line_end)
                         self.text.tag_config("gemini_match", background="#DDEEFF", foreground="navy", font=("Arial", 12, "bold"))
                         break
